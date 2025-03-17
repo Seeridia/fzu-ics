@@ -141,6 +141,8 @@ func addCoursesToCalendar(cal *ics.Calendar, term string, courses []*jwch.Course
 				continue
 			}
 
+			displayName := name
+			displayDescription := description
 			location := strings.TrimPrefix(scheduleRule.Location, "旗山")
 			startClass := scheduleRule.StartClass
 			endClass := scheduleRule.EndClass
@@ -156,16 +158,16 @@ func addCoursesToCalendar(cal *ics.Calendar, term string, courses []*jwch.Course
 			eventIdBase := fmt.Sprintf("%s__%s_%s_%d-%d_%d_%d-%d_%s_%t_%t", term, name, teacher, startWeek, endWeek, weekday, startClass, endClass, location, single, double)
 
 			if adjust {
-				name = "[调课] " + name
-				description += "本课程为调课后的课程。\n"
+				displayName = "[调课] " + displayName
+				displayDescription += "本课程为调课后的课程。\n"
 			}
 
 			event := cal.AddEvent(md5Str(eventIdBase))
 			event.SetCreatedTime(dateBase)
 			event.SetDtStampTime(time.Now())
 			event.SetModifiedAt(time.Now())
-			event.SetSummary(name)
-			event.SetDescription(description)
+			event.SetSummary(displayName)
+			event.SetDescription(displayDescription)
 			event.SetLocation(location)
 			event.SetStartAt(startTime)
 			event.SetEndAt(endTime)
