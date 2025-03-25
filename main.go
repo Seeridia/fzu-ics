@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -158,9 +157,10 @@ func addCoursesToCalendar(cal *ics.Calendar, term string, courses []*jwch.Course
 		teacher := course.Teacher
 		description := "任课教师：" + teacher + "\n"
 
+		// 普通课程
 		for _, scheduleRule := range course.ScheduleRules {
-			if scheduleRule.FromFullWeek { // 单独处理整周课程
-				continue
+			if scheduleRule.FromFullWeek {
+				continue // 在下面单独处理整周课程
 			}
 
 			displayName := name
@@ -206,48 +206,21 @@ func addCoursesToCalendar(cal *ics.Calendar, term string, courses []*jwch.Course
 			}
 		}
 
-		// 单独处理整周课程
-		rawScheduleRules := strings.Split(course.RawScheduleRules, "\n")
+		// 整周课程
+		for _, fullWeekScheduleRule := range course.FullWeekScheduleRules {
+			startTime, _ := calcClassTime(fullWeekScheduleRule.StartWeek, fullWeekScheduleRule.StartWeekDay, 0, 0, dateBase)
+			_, repeatEndTime := calcClassTime(fullWeekScheduleRule.EndWeek, fullWeekScheduleRule.EndWeekDay, 0, 0, dateBase)
 
-		for _, rawScheduleRule := range rawScheduleRules {
-			if rawScheduleRule == "" {
-				continue
-			}
+			eventIdBase := fmt.Sprintf("%s__%s_%s_%d-%d_%d-%d", term, name, teacher, fullWeekScheduleRule.StartWeek, fullWeekScheduleRule.EndWeek, fullWeekScheduleRule.StartWeekDay, fullWeekScheduleRule.EndWeekDay)
 
-			lineData := strings.Fields(rawScheduleRule)
-
-			if strings.Contains(lineData[0], "周") { // 处理整周的课程，比如军训
-				/*
-					03周  星期1  -  04周  星期7
-					[0] 03周
-					[1] 星期1
-					[2] -
-					[3] 04周
-					[4] 星期7
-				*/
-				startWeek, _ := strconv.Atoi(strings.TrimSuffix(lineData[0], "周"))
-				endWeek, _ := strconv.Atoi(strings.TrimSuffix(lineData[3], "周"))
-				startWeekday, _ := strconv.Atoi(strings.TrimPrefix(lineData[1], "星期"))
-				endWeekday, _ := strconv.Atoi(strings.TrimPrefix(lineData[4], "星期"))
-
-				startTime, _ := calcClassTime(startWeek, startWeekday, 0, 0, dateBase)
-				_, repeatEndTime := calcClassTime(endWeek, endWeekday, 0, 0, dateBase)
-
-				eventIdBase := fmt.Sprintf("%s__%s_%s_%d-%d_%d-%d", term, name, teacher, startWeek, endWeek, startWeekday, endWeekday)
-
-				event := cal.AddEvent(md5Str(eventIdBase))
-				event.SetCreatedTime(dateBase)
-				event.SetDtStampTime(time.Now())
-				event.SetModifiedAt(time.Now())
-				event.SetSummary(name)
-				event.SetDescription(description)
-				event.SetAllDayStartAt(startTime)
-				event.SetAllDayEndAt(repeatEndTime.AddDate(0, 0, 1))
-
-				continue
-			}
-
-			// 其他课程不管
+			event := cal.AddEvent(md5Str(eventIdBase))
+			event.SetCreatedTime(dateBase)
+			event.SetDtStampTime(time.Now())
+			event.SetModifiedAt(time.Now())
+			event.SetSummary(name)
+			event.SetDescription(description)
+			event.SetAllDayStartAt(startTime)
+			event.SetAllDayEndAt(repeatEndTime.AddDate(0, 0, 1))
 		}
 	}
 }

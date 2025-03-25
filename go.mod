@@ -1,10 +1,12 @@
 module github.com/renbaoshuo/fzu-ics
 
-go 1.23.0
+go 1.23.4
+
+toolchain go1.23.7
 
 require (
 	github.com/arran4/golang-ical v0.3.2
-	github.com/west2-online/jwch v0.2.11
+	github.com/west2-online/jwch v0.2.18
 )
 
 require (
@@ -13,6 +15,6 @@ require (
 	github.com/djimenez/iconv-go v0.0.0-20160305225143-8960e66bd3da // indirect
 	github.com/go-resty/resty/v2 v2.16.5 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
-	golang.org/x/net v0.35.0 // indirect
+	golang.org/x/net v0.36.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
 )
