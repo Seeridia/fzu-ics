@@ -181,6 +181,17 @@ func addCoursesToCalendar(cal *ics.Calendar, term string, courses []*jwch.Course
 			double := scheduleRule.Double
 			adjust := scheduleRule.Adjust
 
+			/*
+				利用单双周信息更新起始周数
+				01-16 星期5:7-8节(双) 旗山东2-402
+			*/
+			if single && !double {
+				startWeek = startWeek + (startWeek-1)%2
+			}
+			if double && !single {
+				startWeek = startWeek + startWeek%2
+			}
+
 			startTime, endTime := calcClassTime(startWeek, weekday, startClass, endClass, dateBase)
 			_, repeatEndTime := calcClassTime(endWeek, weekday, startClass, endClass, dateBase)
 			eventIdBase := fmt.Sprintf("%s__%s_%s_%d-%d_%d_%d-%d_%s_%t_%t", term, name, teacher, startWeek, endWeek, weekday, startClass, endClass, location, single, double)
