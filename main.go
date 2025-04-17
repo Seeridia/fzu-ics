@@ -111,10 +111,11 @@ func main() {
 
 	// 写入文件
 	fmt.Println("========")
-	fmt.Println("写入文件", needTerm+".ics")
+	filename := fmt.Sprintf("福州大学课程表 [%s] (%s).ics", id, needTerm)
+	fmt.Println("写入文件", filename)
 
 	calendarContent := cal.Serialize()
-	err = os.WriteFile(needTerm+".ics", []byte(calendarContent), 0644)
+	err = os.WriteFile(filename, []byte(calendarContent), 0644)
 	solveErr(err)
 
 	fmt.Println("写入成功！")
