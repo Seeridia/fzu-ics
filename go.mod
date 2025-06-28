@@ -14,6 +14,7 @@ require (
 	github.com/antchfx/xpath v1.3.3 // indirect
 	github.com/djimenez/iconv-go v0.0.0-20160305225143-8960e66bd3da // indirect
 	github.com/go-resty/resty/v2 v2.16.5 // indirect
+	github.com/goccy/go-yaml v1.18.0 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	golang.org/x/net v0.36.0 // indirect
 	golang.org/x/text v0.22.0 // indirect

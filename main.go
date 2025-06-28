@@ -9,8 +9,14 @@ import (
 	"time"
 
 	ics "github.com/arran4/golang-ical"
+	"github.com/goccy/go-yaml"
 	"github.com/west2-online/jwch"
 )
+
+// ExDates 结构体用于解析 exdates.yaml 文件
+type ExDates struct {
+	ExDates map[string]*string `yaml:"exdates"`
+}
 
 // 作息时间
 var CLASS_TIME = [][2][2]int{
@@ -56,6 +62,13 @@ func main() {
 	var cstSh, _ = time.LoadLocation("Asia/Shanghai")
 	time.Local = cstSh
 
+	// 读取调课信息
+	exDates, err := loadExDates("exdates.yaml")
+	if err != nil {
+		fmt.Printf("读取调课信息失败: %v\n", err)
+		exDates = &ExDates{ExDates: make(map[string]*string)}
+	}
+
 	// 读入信息
 	var id, password string
 
@@ -68,7 +81,7 @@ func main() {
 	stu := jwch.NewStudent().WithUser(id, password)
 
 	// 登录
-	err := stu.Login()
+	err = stu.Login()
 	solveErr(err)
 
 	fmt.Println("登录成功！")
@@ -104,10 +117,10 @@ func main() {
 
 	if needTerm == "all" {
 		for _, term := range terms.Terms {
-			addTermToCalendar(stu, cal, calendar, term, terms.ViewState, terms.EventValidation)
+			addTermToCalendar(stu, cal, calendar, term, terms.ViewState, terms.EventValidation, exDates)
 		}
 	} else {
-		addTermToCalendar(stu, cal, calendar, needTerm, terms.ViewState, terms.EventValidation)
+		addTermToCalendar(stu, cal, calendar, needTerm, terms.ViewState, terms.EventValidation, exDates)
 	}
 
 	// 写入文件
@@ -123,7 +136,7 @@ func main() {
 	fmt.Println("========")
 }
 
-func addTermToCalendar(stu *jwch.Student, cal *ics.Calendar, schoolCal *jwch.SchoolCalendar, term string, viewState string, eventValidation string) {
+func addTermToCalendar(stu *jwch.Student, cal *ics.Calendar, schoolCal *jwch.SchoolCalendar, term string, viewState string, eventValidation string, exDates *ExDates) {
 	var curTermStartDate time.Time
 	var err error
 
@@ -150,10 +163,10 @@ func addTermToCalendar(stu *jwch.Student, cal *ics.Calendar, schoolCal *jwch.Sch
 
 	fmt.Printf("[%s] 找到 %d 门课程\n", term, len(list))
 
-	addCoursesToCalendar(cal, term, list, dateBase)
+	addCoursesToCalendar(cal, term, list, dateBase, exDates)
 }
 
-func addCoursesToCalendar(cal *ics.Calendar, term string, courses []*jwch.Course, dateBase time.Time) {
+func addCoursesToCalendar(cal *ics.Calendar, term string, courses []*jwch.Course, dateBase time.Time, exDates *ExDates) {
 	for _, course := range courses {
 		if strings.HasSuffix(course.ExamType, "补考") {
 			continue
@@ -199,7 +212,7 @@ func addCoursesToCalendar(cal *ics.Calendar, term string, courses []*jwch.Course
 
 			if adjust {
 				displayName = "[调课] " + displayName
-				displayDescription += "本课程为调课后的课程。\n"
+				displayDescription += "本课程为教师手动调课后的课程。\n"
 			}
 
 			event := cal.AddEvent(md5Str(eventIdBase))
@@ -214,13 +227,18 @@ func addCoursesToCalendar(cal *ics.Calendar, term string, courses []*jwch.Course
 			}
 			event.SetStartAt(startTime)
 			event.SetEndAt(endTime)
+
+			// 添加重复规则
 			if single && double { // 单双周都有
 				// RRULE:FREQ=WEEKLY;UNTIL=20170101T000000Z
-				event.AddRrule("FREQ=WEEKLY;UNTIL=" + repeatEndTime.Format("20060102T150405Z"))
+				event.AddRrule("FREQ=WEEKLY;UNTIL=" + repeatEndTime.UTC().Format("20060102T150405Z"))
 			} else {
 				// RRULE:FREQ=WEEKLY;UNTIL=20170101T000000Z;INTERVAL=2
-				event.AddRrule("FREQ=WEEKLY;UNTIL=" + repeatEndTime.Format("20060102T150405Z") + ";INTERVAL=2")
+				event.AddRrule("FREQ=WEEKLY;UNTIL=" + repeatEndTime.UTC().Format("20060102T150405Z") + ";INTERVAL=2")
 			}
+
+			// 处理调课信息，添加EXDATE
+			addExDateAndRescheduledEvents(cal, event, exDates, startWeek, endWeek, weekday, startClass, endClass, dateBase, single, double, name, teacher, location, displayDescription, lat, lon)
 		}
 
 		// 整周课程
@@ -262,6 +280,104 @@ func findGeoLocation(location string) (float64, float64) {
 	}
 
 	return 0, 0
+}
+
+// loadExDates 读取调课信息文件
+func loadExDates(filename string) (*ExDates, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	var exDates ExDates
+	err = yaml.Unmarshal(data, &exDates)
+	if err != nil {
+		return nil, err
+	}
+
+	return &exDates, nil
+}
+
+// addExDateAndRescheduledEvents 处理调课信息，添加EXDATE和调课事件
+func addExDateAndRescheduledEvents(cal *ics.Calendar, event *ics.VEvent, exDates *ExDates, startWeek, endWeek, weekday, startClass, endClass int, dateBase time.Time, single, double bool, name, teacher, location, description string, lat, lon float64) {
+	// 遍历所有调课日期
+	for exDateStr, rescheduleDateStr := range exDates.ExDates {
+		exDate, err := time.Parse("2006-01-02", exDateStr)
+		if err != nil {
+			continue
+		}
+
+		// 检查这个日期是否在课程时间范围内
+		if isDateInCourseSchedule(exDate, startWeek, endWeek, weekday, dateBase, single, double) {
+			// 计算原本应该上课的具体时间（使用本地时区）
+			originalStartTime := time.Date(exDate.Year(), exDate.Month(), exDate.Day(),
+				CLASS_TIME[startClass][0][0], CLASS_TIME[startClass][0][1], 0, 0, time.Local)
+
+			// 转换为 UTC 时间，然后格式化为 EXDATE
+			originalStartTimeUTC := originalStartTime.UTC()
+			event.AddExdate(originalStartTimeUTC.Format("20060102T150405Z"))
+
+			// 如果有调课目标日期，创建新事件
+			if rescheduleDateStr != nil {
+				rescheduleDate, err := time.Parse("2006-01-02", *rescheduleDateStr)
+				if err != nil {
+					continue
+				}
+
+				// 计算调课事件的开始和结束时间
+				rescheduleStartTime := time.Date(rescheduleDate.Year(), rescheduleDate.Month(), rescheduleDate.Day(),
+					CLASS_TIME[startClass][0][0], CLASS_TIME[startClass][0][1], 0, 0, time.Local)
+				rescheduleEndTime := time.Date(rescheduleDate.Year(), rescheduleDate.Month(), rescheduleDate.Day(),
+					CLASS_TIME[endClass][1][0], CLASS_TIME[endClass][1][1], 0, 0, time.Local)
+
+				// 创建调课事件
+				rescheduleEventId := fmt.Sprintf("reschedule__%s_%s__%s_%s__%s", exDateStr, *rescheduleDateStr, name, location, rescheduleStartTime.UTC().Format("20060102T150405Z"))
+				rescheduleEvent := cal.AddEvent(md5Str(rescheduleEventId))
+				rescheduleEvent.SetCreatedTime(dateBase)
+				rescheduleEvent.SetDtStampTime(time.Now())
+				rescheduleEvent.SetModifiedAt(time.Now())
+				rescheduleEvent.SetSummary("[调课] " + name)
+				rescheduleEvent.SetDescription(description + fmt.Sprintf("调课信息：原定于 %s 的课程因假期调休调整至 %s。\n", exDateStr, *rescheduleDateStr))
+				rescheduleEvent.SetLocation(location)
+				if lat != 0 && lon != 0 {
+					rescheduleEvent.SetGeo(lat, lon)
+				}
+				rescheduleEvent.SetStartAt(rescheduleStartTime)
+				rescheduleEvent.SetEndAt(rescheduleEndTime)
+			}
+		}
+	}
+}
+
+// isDateInCourseSchedule 检查指定日期是否在课程安排范围内
+func isDateInCourseSchedule(date time.Time, startWeek, endWeek, weekday int, dateBase time.Time, single, double bool) bool {
+	// 计算日期对应的周数和星期
+	daysDiff := int(date.Sub(dateBase).Hours() / 24)
+	weekNum := daysDiff/7 + 1
+	dayOfWeek := int(date.Weekday())
+	if dayOfWeek == 0 { // Sunday
+		dayOfWeek = 7
+	}
+
+	// 检查是否在周数范围内
+	if weekNum < startWeek || weekNum > endWeek {
+		return false
+	}
+
+	// 检查是否是正确的星期
+	if dayOfWeek != weekday {
+		return false
+	}
+
+	// 检查单双周
+	if single && !double && weekNum%2 == 0 {
+		return false
+	}
+	if double && !single && weekNum%2 == 1 {
+		return false
+	}
+
+	return true
 }
 
 func md5Str(str string) string {
