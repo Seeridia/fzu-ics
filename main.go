@@ -3,19 +3,34 @@ package main
 import (
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
 	ics "github.com/arran4/golang-ical"
-	"github.com/goccy/go-yaml"
 	"github.com/west2-online/jwch"
 )
 
-// ExDates 结构体用于解析 exdates.yaml 文件
-type ExDates struct {
-	ExDates map[string]*string `yaml:"exdates"`
+// 调课规则 API
+const ADJUST_API = "https://fzuhelper.west2.online/api/v1/course/adjust/list"
+
+// AdjustRule 调课规则
+type AdjustRule struct {
+	ID          int    `json:"id"`
+	Enabled     bool   `json:"enabled"`     // 是否启用调课规则
+	Year        string `json:"year"`        // 年份
+	Term        string `json:"term"`        // 学期
+	FromDate    string `json:"from_date"`   // 原上课日期 YYYY-MM-DD
+	FromWeek    int    `json:"from_week"`   // 原上课周数
+	FromWeekday int    `json:"from_weekday"` // 原上课星期 1-7
+	ToDate      string `json:"to_date"`     // 新上课日期 YYYY-MM-DD，为空表示仅放假停课
+	ToWeek      int    `json:"to_week"`     // 新上课周数
+	ToWeekday   int    `json:"to_weekday"`  // 新上课星期 1-7
 }
 
 // 作息时间
@@ -62,26 +77,15 @@ func main() {
 	var cstSh, _ = time.LoadLocation("Asia/Shanghai")
 	time.Local = cstSh
 
-	// 读取调课信息
-	exDates, err := loadExDates("exdates.yaml")
-	if err != nil {
-		fmt.Printf("读取调课信息失败: %v\n", err)
-		exDates = &ExDates{ExDates: make(map[string]*string)}
-	}
-
-	// 读入信息
-	var id, password string
-
-	fmt.Print("请输入学号: ")
-	fmt.Scan(&id)
-	fmt.Print("请输入密码: ")
-	fmt.Scan(&password)
+	// 读入信息（优先读取环境变量 FZU_ID / FZU_PASSWORD）
+	id := readInput("FZU_ID", "请输入学号: ")
+	password := readInput("FZU_PASSWORD", "请输入密码: ")
 
 	// 创建学生对象
 	stu := jwch.NewStudent().WithUser(id, password)
 
 	// 登录
-	err = stu.Login()
+	err := stu.Login()
 	solveErr(err)
 
 	fmt.Println("登录成功！")
@@ -93,9 +97,7 @@ func main() {
 	fmt.Println("========")
 	fmt.Println("学期列表:", strings.Join(terms.Terms, " "))
 
-	var needTerm string
-	fmt.Print("请输入学期 (all): ")
-	fmt.Scan(&needTerm)
+	needTerm := readInput("FZU_TERM", "请输入学期 (all): ")
 
 	if needTerm == "" || needTerm == "all" {
 		needTerm = "all"
@@ -117,15 +119,18 @@ func main() {
 
 	if needTerm == "all" {
 		for _, term := range terms.Terms {
-			addTermToCalendar(stu, cal, calendar, term, terms.ViewState, terms.EventValidation, exDates)
+			addTermToCalendar(stu, cal, calendar, term, terms.ViewState, terms.EventValidation)
 		}
 	} else {
-		addTermToCalendar(stu, cal, calendar, needTerm, terms.ViewState, terms.EventValidation, exDates)
+		addTermToCalendar(stu, cal, calendar, needTerm, terms.ViewState, terms.EventValidation)
 	}
 
 	// 写入文件
 	fmt.Println("========")
-	filename := fmt.Sprintf("福州大学课程表 [%s] (%s).ics", id, needTerm)
+	filename := os.Getenv("FZU_OUTPUT")
+	if filename == "" {
+		filename = fmt.Sprintf("福州大学课程表 [%s] (%s).ics", id, needTerm)
+	}
 	fmt.Println("写入文件", filename)
 
 	calendarContent := cal.Serialize()
@@ -136,9 +141,18 @@ func main() {
 	fmt.Println("========")
 }
 
-func addTermToCalendar(stu *jwch.Student, cal *ics.Calendar, schoolCal *jwch.SchoolCalendar, term string, viewState string, eventValidation string, exDates *ExDates) {
+func addTermToCalendar(stu *jwch.Student, cal *ics.Calendar, schoolCal *jwch.SchoolCalendar, term string, viewState string, eventValidation string) {
 	var curTermStartDate time.Time
 	var err error
+
+	// 获取调课规则
+	exDates, err := fetchAdjustRules(term)
+	if err != nil {
+		fmt.Printf("获取 [%s] 调课规则失败: %v\n", term, err)
+		exDates = make(map[string]*string)
+	} else {
+		fmt.Printf("[%s] 找到 %d 条调课规则\n", term, len(exDates))
+	}
 
 	// 查找学期开始时间
 	for _, item := range schoolCal.Terms {
@@ -166,7 +180,7 @@ func addTermToCalendar(stu *jwch.Student, cal *ics.Calendar, schoolCal *jwch.Sch
 	addCoursesToCalendar(cal, term, list, dateBase, exDates)
 }
 
-func addCoursesToCalendar(cal *ics.Calendar, term string, courses []*jwch.Course, dateBase time.Time, exDates *ExDates) {
+func addCoursesToCalendar(cal *ics.Calendar, term string, courses []*jwch.Course, dateBase time.Time, exDates map[string]*string) {
 	for _, course := range courses {
 		if strings.HasSuffix(course.ExamType, "补考") {
 			continue
@@ -282,26 +296,52 @@ func findGeoLocation(location string) (float64, float64) {
 	return 0, 0
 }
 
-// loadExDates 读取调课信息文件
-func loadExDates(filename string) (*ExDates, error) {
-	data, err := os.ReadFile(filename)
+// fetchAdjustRules 从 fzuhelper API 获取指定学期的调课规则，
+// 返回 原上课日期 -> 新上课日期 的映射（值为 nil 表示仅放假停课）
+func fetchAdjustRules(term string) (map[string]*string, error) {
+	resp, err := http.Get(ADJUST_API + "?term=" + url.QueryEscape(term))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	var exDates ExDates
-	err = yaml.Unmarshal(data, &exDates)
-	if err != nil {
+	var result struct {
+		Code    string       `json:"code"`
+		Message string       `json:"message"`
+		Data    []AdjustRule `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, err
 	}
+	if result.Code != "10000" {
+		return nil, fmt.Errorf("error code: %s, error msg: %s", result.Code, result.Message)
+	}
 
-	return &exDates, nil
+	exDates := make(map[string]*string)
+	for _, rule := range result.Data {
+		if !rule.Enabled {
+			continue
+		}
+		if rule.ToDate != "" {
+			toDate := rule.ToDate
+			exDates[rule.FromDate] = &toDate
+		} else {
+			exDates[rule.FromDate] = nil
+		}
+	}
+
+	return exDates, nil
 }
 
 // addExDateAndRescheduledEvents 处理调课信息，添加EXDATE和调课事件
-func addExDateAndRescheduledEvents(cal *ics.Calendar, event *ics.VEvent, exDates *ExDates, startWeek, endWeek, weekday, startClass, endClass int, dateBase time.Time, single, double bool, name, teacher, location, description string, lat, lon float64) {
+func addExDateAndRescheduledEvents(cal *ics.Calendar, event *ics.VEvent, exDates map[string]*string, startWeek, endWeek, weekday, startClass, endClass int, dateBase time.Time, single, double bool, name, teacher, location, description string, lat, lon float64) {
 	// 遍历所有调课日期
-	for exDateStr, rescheduleDateStr := range exDates.ExDates {
+	for exDateStr, rescheduleDateStr := range exDates {
 		exDate, err := time.Parse("2006-01-02", exDateStr)
 		if err != nil {
 			continue
@@ -386,6 +426,19 @@ func md5Str(str string) string {
 	fullHash := hex.EncodeToString(hasher.Sum(nil)) // 32-bit (full) hash
 
 	return fullHash
+}
+
+// readInput 优先读取指定环境变量，未设置时交互式读入
+func readInput(envKey string, prompt string) string {
+	if v := os.Getenv(envKey); v != "" {
+		return v
+	}
+
+	fmt.Print(prompt)
+	var s string
+	fmt.Scan(&s)
+
+	return s
 }
 
 func contains(slice []string, item string) bool {
