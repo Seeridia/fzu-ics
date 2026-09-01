@@ -302,7 +302,7 @@ func findGeoLocation(location string) (float64, float64) {
 func addAppleStructuredLocation(event *ics.VEvent, location string, lat, lon float64) {
 	event.AddProperty(
 		ics.ComponentProperty("X-APPLE-STRUCTURED-LOCATION"),
-		fmt.Sprintf("geo:%g,%g", lat, lon),
+		fmt.Sprintf("geo:%.15f,%.15f", lat, lon),
 		ics.WithValue(string(ics.ValueDataTypeUri)),
 		&ics.KeyValues{Key: "X-TITLE", Value: []string{location}},
 	)
