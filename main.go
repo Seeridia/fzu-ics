@@ -304,7 +304,6 @@ func addAppleStructuredLocation(event *ics.VEvent, location string, lat, lon flo
 		ics.ComponentProperty("X-APPLE-STRUCTURED-LOCATION"),
 		fmt.Sprintf("geo:%g,%g", lat, lon),
 		ics.WithValue(string(ics.ValueDataTypeUri)),
-		&ics.KeyValues{Key: "X-APPLE-RADIUS", Value: []string{"50"}},
 		&ics.KeyValues{Key: "X-TITLE", Value: []string{location}},
 	)
 }
